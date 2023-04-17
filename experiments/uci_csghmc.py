@@ -306,7 +306,7 @@ def train(epoch):
         if args.regress == 0:
             loss = criterion(outputs, targets)
         else:
-            loss = criterion(outputs[:, 0], targets, outputs[:, 1].exp())
+            loss = criterion(outputs, targets)
         loss.backward()
         update_params(lr, epoch)
 
@@ -366,7 +366,8 @@ T = args.epochs*num_batch # total number of iterations
 if args.regress == 0:
     criterion = nn.CrossEntropyLoss()
 else:
-    criterion = nn.GaussianNLLLoss()
+    def criterion(preds, targets):
+        return (torch.log(preds[:, 1].exp()) + (targets[:, 0] - preds[:, 0]) ** 2 / (preds[:, 1].exp())).mean()
     
 mt = 0
 
@@ -376,14 +377,15 @@ if args.regress == 0:
         logp = torch.log(torch.nn.functional.softmax(all_preds.mean(1), dim=1))
         return inputs * logp[:, 1] + (1 - inputs) * logp[:, 0]
 else:
-    def predict_density(inputs, all_preds):
-        mean, std = all_preds[..., 0].mean(1), all_preds[..., 1].exp() ** .5
+    def predict_density(inputs, all_mean, all_std):
+        mean, std = all_mean.mean(1), all_std.mean(1)
         return sp.stats.norm.logpdf(
             inputs[:, -1], loc=mean, scale=std
         )
 
 print('==> Starting training..')
 all_samples = torch.zeros((x_test.shape[0], args.epochs // args.cycle_length, 1 + (args.regress==0)))
+all_std = torch.zeros((x_test.shape[0], args.epochs // args.cycle_length, 1 + (args.regress==0)))
 for epoch in range(args.epochs):
     train(epoch)
     if epoch%args.cycle_length==0:
@@ -398,12 +400,21 @@ for epoch in range(args.epochs):
 
         with torch.no_grad():
             for batch_idx, (inputs, targets) in enumerate(testloader):
-                all_samples[:, mt] = net(inputs)
+                if args.regress == 0:
+                    all_samples[:, mt] = net(inputs)
+                else:
+                    all_preds = net(inputs)
+                    all_samples[:, mt], all_std[:, mt] = all_preds[..., :1], all_preds[..., 1:].exp() ** .5
+                    
                 if batch_idx > 0:
                     raise ValueError('batch size too small')
         mt += 1
 
-nll = -predict_density(targets, all_samples).mean()
+if args.regress == 0:
+    nll = -predict_density(targets, all_samples).mean()
+else:
+    nll = -predict_density(targets, all_samples, all_std).mean()
+    
 print('nll', nll.item())
 
 wandb.log({'nll': nll.item()})
