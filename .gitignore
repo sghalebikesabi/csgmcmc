@@ -11,6 +11,7 @@ outputs
 data
 *sweeps.sh
 ckpt
+sweep*.sh
 
 data/MNIST
 runs
